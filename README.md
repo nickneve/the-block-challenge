@@ -4,16 +4,6 @@
 
 Angular 21 · NestJS 11 · SQLite. The original brief is in [`docs/CHALLENGE.md`](docs/CHALLENGE.md).
 
-<p align="center">
-  <img src="docs/screenshots/inventory-light.png" alt="Search: sort tabs, filters with live counts, and cards with colour-tinted photos and a price bar on each photo" width="860" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/detail-light.png" alt="Vehicle detail: gallery, market value estimate and the bid panel" width="425" />
-  <img src="docs/screenshots/confirm-bid.png" alt="Placing a bid: how you'll pay (in-house financing, another lender or pay in full), pickup or flatbed delivery, and the total if you win" width="425" />
-</p>
-
----
 
 ## How to Run
 
@@ -41,7 +31,7 @@ Open **http://localhost:4200**. On first start, the API creates a SQLite databas
 
 ## Time Spent
 
-_TODO (author): add your time._
+I spent around 3 hours and 30 minutes on this using Claude in VS Code.
 
 I built it in cut-line order, so each step left a working app: scaffold and seed, browse, detail, then bid. That met the minimum bar before I started any extras. Live updates, My bids and polish came next, followed by several rounds of changes from my own review.
 
