@@ -10,11 +10,20 @@ export class WatchlistStore {
 
   readonly ids = signal<ReadonlySet<string>>(new Set());
   readonly count = computed(() => this.ids().size);
+  /** The last load failed, so the stars and count can't be trusted until a retry works. */
+  readonly error = signal(false);
 
   start(): void {
+    this.refresh();
+  }
+
+  refresh(): void {
     this.api.myWatchlist().subscribe({
-      next: (items) => this.ids.set(new Set(items.map((item) => item.id))),
-      error: () => undefined,
+      next: (items) => {
+        this.ids.set(new Set(items.map((item) => item.id)));
+        this.error.set(false);
+      },
+      error: () => this.error.set(true),
     });
   }
 

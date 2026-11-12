@@ -4,15 +4,20 @@ import { AuctionUpdate, MyBidStatus, VehicleSummary } from './api/models';
 
 export type LiveConnection = 'connecting' | 'live' | 'offline';
 
-/** Messages between this app's tabs. */
+/** Messages between this app's tabs. Each carries the stream position, so any tab can take over from there. */
 type TabMessage =
-  | { type: 'update'; update: AuctionUpdate }
-  | { type: 'connection'; state: LiveConnection }
+  | { type: 'update'; update: AuctionUpdate; eventId: string | null }
+  | { type: 'connection'; state: LiveConnection; eventId: string | null }
+  | { type: 'resync'; eventId: string | null }
+  | { type: 'position'; eventId: string | null }
   /** A new tab asking the tab that holds the stream how it's doing. */
   | { type: 'hello' };
 
 export const LIVE_CHANNEL = 'the-block.live';
 export const LIVE_LOCK = 'the-block.live-stream';
+export const LIVE_URL = '/api/events';
+const RETRY_MIN_MS = 1000;
+const RETRY_MAX_MS = 30_000;
 
 /**
  * Live auction updates: every bid, Buy Now and close anywhere is pushed here,
@@ -24,20 +29,35 @@ export const LIVE_LOCK = 'the-block.live-stream';
  * Instead, whichever tab holds a Web Lock opens the stream and relays it to the
  * other tabs over a BroadcastChannel. When that tab closes, the browser hands
  * the lock (and the stream) to another tab. Browsers without these APIs fall
- * back to a stream per tab. EventSource reconnects on its own after a drop.
+ * back to a stream per tab.
+ *
+ * Nothing is lost when the connection drops:
+ * - Every event has an id. EventSource reconnects on its own and sends the last id
+ *   it saw, and the server first replays what was missed.
+ * - A new stream (another tab taking over, or a retry after the browser gave up on
+ *   one) passes the last id as `?since=`.
+ * - If the server can no longer replay (it restarted, or the gap is too long), it
+ *   sends `resync` and `resync$` fires, so views reload from the API.
  */
 @Injectable({ providedIn: 'root' })
 export class LiveAuctionService {
   private readonly updatesSubject = new Subject<AuctionUpdate>();
+  private readonly resyncSubject = new Subject<void>();
   private source?: EventSource;
   private channel?: BroadcastChannel;
   private releaseLock?: () => void;
   private waitingForLock?: AbortController;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  private retryDelay = RETRY_MIN_MS;
   private started = false;
   /** True in the one tab that holds the stream. */
   private leading = false;
+  /** The id of the last event this browser saw, from the stream or relayed by the leading tab. */
+  private lastEventId: string | null = null;
 
   readonly updates$: Observable<AuctionUpdate> = this.updatesSubject.asObservable();
+  /** Fires when updates were missed and couldn't be replayed: reload what's on screen. */
+  readonly resync$: Observable<void> = this.resyncSubject.asObservable();
   readonly connection = signal<LiveConnection>('connecting');
 
   constructor() {
@@ -72,6 +92,8 @@ export class LiveAuctionService {
   disconnect(): void {
     this.started = false;
     this.leading = false;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
     this.waitingForLock?.abort();
     this.waitingForLock = undefined;
     this.source?.close();
@@ -83,20 +105,61 @@ export class LiveAuctionService {
   }
 
   private openStream(): void {
-    const source = new EventSource('/api/events');
-    source.onopen = () => this.setConnection('live');
-    source.onerror = () => this.setConnection(source.readyState === EventSource.CLOSED ? 'offline' : 'connecting');
+    const url = this.lastEventId ? `${LIVE_URL}?since=${encodeURIComponent(this.lastEventId)}` : LIVE_URL;
+    const source = new EventSource(url);
+    source.onopen = () => {
+      this.retryDelay = RETRY_MIN_MS;
+      this.setConnection('live');
+    };
+    source.onerror = () => {
+      if (source.readyState !== EventSource.CLOSED) {
+        this.setConnection('connecting'); // the browser is already retrying, with Last-Event-ID
+        return;
+      }
+      // The browser gave up (e.g. the server answered with an error while restarting): retry ourselves.
+      this.setConnection('offline');
+      this.scheduleReopen();
+    };
+
     source.addEventListener('auction.updated', (event) => {
-      const update = JSON.parse((event as MessageEvent<string>).data) as AuctionUpdate;
+      const message = event as MessageEvent<string>;
+      this.track(message);
+      const update = JSON.parse(message.data) as AuctionUpdate;
       this.updatesSubject.next(update);
-      this.relay({ type: 'update', update });
+      this.relay({ type: 'update', update, eventId: this.lastEventId });
     });
+    source.addEventListener('resync', (event) => {
+      this.track(event as MessageEvent<string>);
+      this.resyncSubject.next();
+      this.relay({ type: 'resync', eventId: this.lastEventId });
+    });
+    for (const type of ['ready', 'ping']) {
+      source.addEventListener(type, (event) => {
+        this.track(event as MessageEvent<string>);
+        this.relay({ type: 'position', eventId: this.lastEventId });
+      });
+    }
     this.source = source;
+  }
+
+  private scheduleReopen(): void {
+    this.source?.close();
+    this.source = undefined;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      if (this.started && (this.leading || !this.channel)) this.openStream();
+    }, this.retryDelay);
+    this.retryDelay = Math.min(this.retryDelay * 2, RETRY_MAX_MS);
+  }
+
+  private track(event: MessageEvent<string>): void {
+    if (event.lastEventId) this.lastEventId = event.lastEventId;
   }
 
   private setConnection(state: LiveConnection): void {
     this.connection.set(state);
-    this.relay({ type: 'connection', state });
+    this.relay({ type: 'connection', state, eventId: this.lastEventId });
   }
 
   private relay(message: TabMessage): void {
@@ -104,15 +167,21 @@ export class LiveAuctionService {
   }
 
   private onTabMessage(message: TabMessage): void {
+    if (message.type === 'hello') {
+      this.relay({ type: 'connection', state: this.connection(), eventId: this.lastEventId });
+      return;
+    }
+    if (this.leading) return;
+    if (message.eventId) this.lastEventId = message.eventId;
     switch (message.type) {
       case 'update':
-        if (!this.leading) this.updatesSubject.next(message.update);
+        this.updatesSubject.next(message.update);
         break;
       case 'connection':
-        if (!this.leading) this.connection.set(message.state);
+        this.connection.set(message.state);
         break;
-      case 'hello':
-        this.relay({ type: 'connection', state: this.connection() });
+      case 'resync':
+        this.resyncSubject.next();
         break;
     }
   }

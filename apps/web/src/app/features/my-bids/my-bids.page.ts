@@ -10,6 +10,7 @@ import { MyBidsStore } from '../../core/state/my-bids.store';
 import { WatchlistStore } from '../../core/state/watchlist.store';
 import { MoneyPipe } from '../../shared/pipes';
 import { MyStatusBadgeComponent } from '../../shared/ui/badges.component';
+import { LoadErrorComponent } from '../../shared/ui/load-error.component';
 import { LotStatusComponent } from '../../shared/ui/lot-status.component';
 import { VehicleImageComponent } from '../../shared/ui/vehicle-image.component';
 import { WatchButtonComponent } from '../../shared/ui/watch-button.component';
@@ -28,6 +29,7 @@ type Tab = (typeof TABS)[number];
     VehicleImageComponent,
     WatchButtonComponent,
     IconComponent,
+    LoadErrorComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './my-bids.page.html',
@@ -44,13 +46,19 @@ export class MyBidsPage {
   private readonly route = inject(ActivatedRoute);
 
   /** `?tab=watchlist` deep-links a tab (e.g. from the account menu). */
-  readonly tabParam = input<string | undefined>(undefined, { alias: 'tab' });
-  protected readonly tab = linkedSignal<Tab>(() => {
-    const param = this.tabParam();
+  readonly tab = input<string | undefined>(undefined);
+  protected readonly activeTab = linkedSignal<Tab>(() => {
+    const param = this.tab();
     return TABS.includes(param as Tab) ? (param as Tab) : 'active';
   });
   private readonly watchlistItems = signal<VehicleSummary[]>([]);
   protected readonly watchlistLoaded = signal(false);
+  private readonly watchlistFailed = signal(false);
+
+  /** The current tab's data failed to load: say so instead of showing an empty list. */
+  protected readonly loadError = computed(() =>
+    this.activeTab() === 'watchlist' ? this.watchlistFailed() : this.store.error(),
+  );
 
   /** Un-starring on this page removes the row straight away. */
   protected readonly watchlist = computed(() => {
@@ -68,7 +76,7 @@ export class MyBidsPage {
   ]);
 
   protected readonly rows = computed(() => {
-    switch (this.tab()) {
+    switch (this.activeTab()) {
       case 'active':
         return this.active();
       case 'ended':
@@ -80,21 +88,40 @@ export class MyBidsPage {
 
   constructor() {
     this.store.refresh();
-    this.api.myWatchlist().subscribe({
-      next: (items) => {
-        this.watchlistItems.set(items);
-        this.watchlistLoaded.set(true);
-      },
-      error: () => this.watchlistLoaded.set(true),
-    });
+    this.loadWatchlist();
 
     this.live.updates$.pipe(takeUntilDestroyed()).subscribe((update) => {
       this.watchlistItems.update((items) => items.map((item) => applyAuctionUpdate(item, update, this.bidder.handle())));
     });
+    // The bids reload themselves (MyBidsStore); the watchlist rows are this page's own.
+    this.live.resync$.pipe(takeUntilDestroyed()).subscribe(() => this.loadWatchlist());
+  }
+
+  protected retry(): void {
+    if (this.activeTab() === 'watchlist') {
+      this.watchlistStore.refresh();
+      this.loadWatchlist();
+    } else {
+      this.store.refresh();
+    }
+  }
+
+  private loadWatchlist(): void {
+    this.api.myWatchlist().subscribe({
+      next: (items) => {
+        this.watchlistItems.set(items);
+        this.watchlistFailed.set(false);
+        this.watchlistLoaded.set(true);
+      },
+      error: () => {
+        this.watchlistFailed.set(true);
+        this.watchlistLoaded.set(true);
+      },
+    });
   }
 
   protected selectTab(tab: Tab): void {
-    this.tab.set(tab);
+    this.activeTab.set(tab);
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: { tab: tab === 'active' ? null : tab },

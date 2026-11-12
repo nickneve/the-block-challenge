@@ -166,6 +166,8 @@ export class VehicleDetailPage {
       });
 
     this.live.updates$.pipe(takeUntilDestroyed()).subscribe((update) => this.applyLiveUpdate(update));
+    // Updates were missed and can't be replayed: reload the lot quietly (the page stays up meanwhile).
+    this.live.resync$.pipe(takeUntilDestroyed()).subscribe(() => this.reload$.next());
 
     effect(() => {
       const vehicle = this.vehicle();

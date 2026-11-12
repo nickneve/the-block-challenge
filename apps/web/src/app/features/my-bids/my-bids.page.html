@@ -19,32 +19,46 @@
 
   <div class="tabs" role="group" aria-label="Show">
     @for (option of tabs(); track option.value) {
-      <button type="button" class="pill" [attr.aria-pressed]="tab() === option.value" (click)="selectTab(option.value)">
+      <button type="button" class="pill" [attr.aria-pressed]="activeTab() === option.value" (click)="selectTab(option.value)">
         {{ option.label }} <span class="count">{{ option.count }}</span>
       </button>
     }
   </div>
 
-  @if (!store.loaded() || (tab() === 'watchlist' && !watchlistLoaded())) {
+  @if (!store.loaded() || (activeTab() === 'watchlist' && !watchlistLoaded())) {
     <div class="list">
       @for (placeholder of [1, 2, 3]; track placeholder) {
         <div class="skeleton" style="height: 112px; border-radius: 16px"></div>
       }
     </div>
+  } @else if (loadError() && rows().length === 0) {
+    <app-load-error
+      [title]="activeTab() === 'watchlist' ? 'Your watchlist didn’t load' : 'Your bids didn’t load'"
+      message="The server didn't respond. Your bids aren't affected; this page just couldn't fetch them."
+      (retry)="retry()"
+    />
   } @else if (rows().length === 0) {
     <div class="empty">
-      @if (tab() === 'watchlist') {
+      @if (activeTab() === 'watchlist') {
         <svg appIcon="star" [size]="34" [strokeWidth]="1.6"></svg>
         <h2>Nothing on your watchlist</h2>
         <p class="muted">Star vehicles while you browse to keep an eye on them here.</p>
       } @else {
         <svg appIcon="gavel" [size]="34" [strokeWidth]="1.6"></svg>
-        <h2>{{ tab() === 'active' ? 'No active bids' : 'No finished auctions yet' }}</h2>
+        <h2>{{ activeTab() === 'active' ? 'No active bids' : 'No finished auctions yet' }}</h2>
         <p class="muted">Bids you place show up here, with a heads-up the moment you're outbid.</p>
       }
       <a class="btn btn--primary" routerLink="/">Browse auctions</a>
     </div>
   } @else {
+    @if (loadError()) {
+      <app-load-error
+        [inline]="true"
+        title="Couldn't refresh"
+        message="Showing what loaded earlier; it may be out of date."
+        (retry)="retry()"
+      />
+    }
     <ul class="list">
       @for (item of rows(); track item.id) {
         <li class="card row" [class.is-outbid]="item.myStatus === 'outbid'">
@@ -80,7 +94,7 @@
             } @else {
               <a class="btn btn--secondary btn--sm" [routerLink]="['/vehicles', item.id]">View</a>
             }
-            @if (tab() === 'watchlist') {
+            @if (activeTab() === 'watchlist') {
               <app-watch-button [vehicleId]="item.id" />
             }
           </div>

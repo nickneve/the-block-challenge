@@ -21,6 +21,8 @@ Open **http://localhost:4200**. On first start, the API creates a SQLite databas
 | `npm run dev` | API (watch mode) and Angular dev server with live reload |
 | `npm start` | Production build of both apps, served from one port: http://localhost:3000 |
 | `npm test` | API unit and e2e tests (Jest), then web unit tests (Vitest) |
+| `npm run test:e2e` | Browser tests (Playwright) against a production build on port 3100 |
+| `npm run lint` | ESLint for both apps, including Angular template and accessibility rules |
 | `npm run db:reset` | Deletes the database so the next start re-seeds it with fresh auction times. Stop the API first. |
 
 **Good to know**
@@ -109,6 +111,12 @@ data/vehicles.json   unchanged seed data
   - Status, minimum bid and "my status" are computed when read, so they can't go stale.
 - **SQLite and plain SQL, no ORM.** It needs no setup, and three tables don't need an ORM. Moving to Postgres would mean swapping the repositories.
 - **Server-sent events, not WebSockets.** Updates only flow from server to client, and bids are ordinary POSTs. Browsers allow only about six connections per site over HTTP/1.1, so one tab per browser holds the stream and relays updates to the others.
+- **A dropped connection loses nothing.**
+  - Every event has an id. A reconnecting browser sends the last id it saw and is first sent what it missed, including when another tab takes over the stream.
+  - If those events are gone (the server restarted, or the gap is over about an hour), the server says so and the page reloads its data.
+  - If the browser gives up on the stream, the app reopens it with backoff.
+- **Live bids keep lists accurate, not just prices.** Prices change in place at once. Then the loaded results are re-read from the server, so a lot that ends or leaves a price filter drops out, sorts reorder and the counts follow.
+- **Failures look like failures.** If My bids, the watchlist or saved searches can't load, the page says so and offers *Try again*, instead of showing an empty list.
 - **Filters live in the URL,** so views can be shared and survive a refresh. Filtering, sorting, paging and the filter counts all run in SQL.
 
 **Design:** a neutral canvas with one action colour.
@@ -119,20 +127,27 @@ data/vehicles.json   unchanged seed data
 ## Testing
 
 ```bash
-npm test
+npm run lint
+npm test           # API unit and end-to-end, web unit
+npm run test:e2e   # browser tests
 ```
 
-- **API unit (Jest, 78):** every auction rule, schedule normalization, the seeded bid history, distances, saved-search keys and the market value model.
-- **API end-to-end (Jest + supertest, 22):** the real app on an in-memory database with a controllable clock. They cover:
+- **API unit (Jest, 83):** every auction rule, schedule normalization, the seeded bid history, distances, saved-search keys, the market value model and the live stream's replay buffer.
+- **API end-to-end (Jest + supertest, 26):** the real app on an in-memory database with a controllable clock. They cover:
   - Search and filters.
   - Bids: accepted, too low, outbidding yourself, and a closed lot.
   - Soft close and Buy Now.
   - My bids, the watchlist and saved searches.
-- **Web unit (Vitest, 97):** filters ⇄ URL, bid checks and confirmation warnings, merging live updates, the shared live stream, payment and delivery plans, calendar links, and the theme.
-- **In the browser:** I drove each flow in headless Chrome at 375 to 2560 px in both themes, including:
-  - Bidding as a guest.
-  - Being outbid by a second buyer.
-  - Eight tabs open at once.
+  - The live stream over real HTTP: replaying missed events after a reconnect, and telling a client to resync.
+- **Web unit (Vitest, 103):** filters ⇄ URL, bid checks and confirmation warnings, merging live updates, the shared live stream (handover, reconnecting, resyncing), load errors, payment and delivery plans, calendar links, and the theme.
+- **Browser (Playwright, 13):** the production build on a fresh in-memory database, on desktop and a phone.
+  - Searching, and clearing a search or removing its chip mid-typing without it coming back.
+  - Bidding as a guest: sign in, confirm, high bidder.
+  - Another dealer's bid arriving live; a lot leaving a price filter, with the count following; a price sort reordering.
+  - Error states with *Try again* for My bids, the watchlist and saved searches.
+  - On a phone: the filter sheet, the sticky bid bar, and no sideways scrolling.
+  - Locally they use your installed Chrome; CI installs Playwright's Chromium.
+- **CI:** GitHub Actions runs the lint, all the tests and both builds, and the browser tests, on every push and pull request.
 
 ## What I'd Do With More Time
 
@@ -141,4 +156,5 @@ npm test
 - **What happens after a win:** financing paperwork, carrier booking and payment due dates, driven by the choices made when bidding.
 - **A real valuation feed,** and a "furthest below market" sort built on it.
 - **A shared API contract** generated from OpenAPI, instead of DTOs mirrored by hand.
-- **Playwright end-to-end tests** and a screen-reader accessibility audit.
+- **A screen-reader accessibility audit,** beyond the automated template checks.
+- **Smarter live lists at scale:** with thousands of lots, re-read only the rows on screen, or have the server push "this lot left your search", instead of re-reading everything loaded.

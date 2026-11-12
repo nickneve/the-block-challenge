@@ -13,6 +13,12 @@
         <div class="skeleton" style="height: 104px; border-radius: 16px"></div>
       }
     </div>
+  } @else if (saved.error() && rows().length === 0) {
+    <app-load-error
+      title="Your saved searches didn’t load"
+      message="The server didn't respond. Nothing has been deleted; this page just couldn't fetch your searches."
+      (retry)="saved.refresh()"
+    />
   } @else if (rows().length === 0) {
     <div class="empty">
       <svg appIcon="bookmark" [size]="34" [strokeWidth]="1.6"></svg>

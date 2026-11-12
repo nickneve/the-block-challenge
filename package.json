@@ -15,10 +15,19 @@
     "build": "npm run build -w @the-block/web && npm run build -w @the-block/api",
     "start": "npm run build && npm run start -w @the-block/api",
     "test": "npm test -w @the-block/api && npm test -w @the-block/web",
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
     "db:reset": "npm run db:reset -w @the-block/api",
     "generate:data": "node scripts/generate_vehicles.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.65.0",
+    "angular-eslint": "^21.4.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.39.5",
+    "globals": "^16.5.0",
+    "typescript": "~5.9.2",
+    "typescript-eslint": "^8.72.2"
   }
 }

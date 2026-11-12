@@ -358,9 +358,17 @@
         </span>
       </button>
     } @empty {
-      <p class="saved-empty">
-        Nothing saved yet. Filter the results, then choose <strong>Save search</strong> to come back to them here.
-      </p>
+      @if (saved.error()) {
+        <p class="saved-empty" role="alert">Your saved searches didn’t load.</p>
+        <button type="button" cdkMenuItem class="menu-item" (cdkMenuItemTriggered)="saved.refresh()">
+          <svg appIcon="rotate-ccw" [size]="16"></svg>
+          Try again
+        </button>
+      } @else {
+        <p class="saved-empty">
+          Nothing saved yet. Filter the results, then choose <strong>Save search</strong> to come back to them here.
+        </p>
+      }
     }
     <hr class="menu-divider" />
     <a cdkMenuItem class="menu-item" routerLink="/saved-searches">

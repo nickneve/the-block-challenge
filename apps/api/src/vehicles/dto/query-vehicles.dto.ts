@@ -84,6 +84,10 @@ export class QueryVehiclesDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1)
   page = 1;
 
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100)
+  /**
+   * Up to 250, so a client can re-read everything it has loaded by infinite scroll in one
+   * consistent request after live updates (the whole dataset is 200 lots).
+   */
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(250)
   pageSize = 24;
 }

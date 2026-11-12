@@ -21,6 +21,8 @@ export class SavedSearchesStore {
 
   readonly items = signal<SavedSearch[]>([]);
   readonly loaded = signal(false);
+  /** The last load failed. The page shows an error (not "no saved searches") until a retry works. */
+  readonly error = signal(false);
   readonly count = computed(() => this.items().length);
   /** New matches across every saved search (listed in the last 24 hours). */
   readonly newCount = computed(() => this.items().reduce((total, saved) => total + saved.newCount, 0));
@@ -38,9 +40,13 @@ export class SavedSearchesStore {
     this.api.savedSearches().subscribe({
       next: (items) => {
         this.items.set(items);
+        this.error.set(false);
         this.loaded.set(true);
       },
-      error: () => this.loaded.set(true),
+      error: () => {
+        this.error.set(true);
+        this.loaded.set(true);
+      },
     });
   }
 

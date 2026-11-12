@@ -30,10 +30,11 @@ import { PhotoViewerData, PhotoViewerDialog } from './photo-viewer.dialog';
         (keydown.arrowleft)="go(index() - 1)"
         (keydown.arrowright)="go(index() + 1)"
         (keydown.enter)="openViewer()"
+        (click)="openViewer()"
       >
+        <!-- A click or Enter opens the photo on screen full size (slides snap, so that's the current one). -->
         @for (src of images(); track $index) {
-          <!-- Clicking opens full screen; the counter button below does the same for keyboards. -->
-          <div class="slide" [attr.aria-label]="'Photo ' + ($index + 1) + ' of ' + images().length" (click)="openViewer($index)">
+          <div class="slide" [attr.aria-label]="'Photo ' + ($index + 1) + ' of ' + images().length">
             <app-vehicle-image
               [src]="src"
               [alt]="alt() + ', photo ' + ($index + 1)"

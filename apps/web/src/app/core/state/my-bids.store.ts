@@ -22,6 +22,8 @@ export class MyBidsStore {
 
   readonly items = signal<VehicleSummary[]>([]);
   readonly loaded = signal(false);
+  /** The last load failed. Pages show an error (not "no bids") until a retry works. */
+  readonly error = signal(false);
 
   readonly outbid = computed(() => this.items().filter((item) => item.myStatus === 'outbid'));
   readonly winning = computed(() => this.items().filter((item) => item.myStatus === 'winning'));
@@ -31,15 +33,21 @@ export class MyBidsStore {
   start(): void {
     this.refresh();
     this.live.updates$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((update) => this.onUpdate(update));
+    // Updates were missed and can't be replayed: reload rather than show stale statuses.
+    this.live.resync$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => this.refresh());
   }
 
   refresh(): void {
     this.api.myBids().subscribe({
       next: (items) => {
         this.items.set(items);
+        this.error.set(false);
         this.loaded.set(true);
       },
-      error: () => this.loaded.set(true),
+      error: () => {
+        this.error.set(true);
+        this.loaded.set(true);
+      },
     });
   }
 

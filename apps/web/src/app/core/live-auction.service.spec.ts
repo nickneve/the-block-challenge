@@ -70,19 +70,27 @@ describe('LiveAuctionService across tabs', () => {
     closed = false;
     onopen: (() => void) | null = null;
     onerror: (() => void) | null = null;
-    private listener?: (event: MessageEvent<string>) => void;
+    private readonly listeners = new Map<string, (event: MessageEvent<string>) => void>();
 
     constructor(readonly url: string) {
       FakeEventSource.opened.push(this);
     }
-    addEventListener(_type: string, listener: (event: MessageEvent<string>) => void): void {
-      this.listener = listener;
+    addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
+      this.listeners.set(type, listener);
     }
     close(): void {
       this.closed = true;
     }
-    push(update: AuctionUpdate): void {
-      this.listener?.({ data: JSON.stringify(update) } as MessageEvent<string>);
+    emit(type: string, data: unknown, lastEventId = ''): void {
+      this.listeners.get(type)?.({ data: JSON.stringify(data), lastEventId } as MessageEvent<string>);
+    }
+    push(update: AuctionUpdate, lastEventId = ''): void {
+      this.emit('auction.updated', update, lastEventId);
+    }
+    /** The browser giving up on the stream (it does this after an HTTP error, for example). */
+    fail(): void {
+      this.readyState = FakeEventSource.CLOSED;
+      this.onerror?.();
     }
   }
 
@@ -188,5 +196,56 @@ describe('LiveAuctionService across tabs', () => {
     second.updates$.subscribe((u) => seen.push(u.vehicleId));
     FakeEventSource.opened[1].push(update('v2'));
     expect(seen).toEqual(['v2']);
+  });
+
+  it('starts a taken-over stream from the last event the new tab saw, so nothing is missed', async () => {
+    const first = tab();
+    const second = tab();
+    first.connect();
+    second.connect();
+    FakeEventSource.opened[0].push(update('v1'), 'abc:7');
+
+    first.disconnect();
+    await settle();
+
+    expect(FakeEventSource.opened[1].url).toBe('/api/events?since=abc%3A7');
+  });
+
+  it('passes a resync from the server to every tab', () => {
+    const first = tab();
+    const second = tab();
+    let resyncs = 0;
+    first.resync$.subscribe(() => resyncs++);
+    second.resync$.subscribe(() => resyncs++);
+    first.connect();
+    second.connect();
+
+    FakeEventSource.opened[0].emit('resync', {}, 'abc:9');
+    expect(resyncs).toBe(2);
+  });
+
+  it('reopens a stream the browser gave up on, from the last event, backing off between tries', () => {
+    vi.useFakeTimers();
+    try {
+      const only = tab();
+      only.connect();
+      FakeEventSource.opened[0].emit('ready', {}, 'abc:3');
+
+      FakeEventSource.opened[0].fail();
+      expect(only.connection()).toBe('offline');
+      expect(FakeEventSource.opened[0].closed).toBe(true);
+
+      vi.advanceTimersByTime(1000);
+      expect(FakeEventSource.opened.length).toBe(2);
+      expect(FakeEventSource.opened[1].url).toBe('/api/events?since=abc%3A3');
+
+      FakeEventSource.opened[1].fail();
+      vi.advanceTimersByTime(1000);
+      expect(FakeEventSource.opened.length).toBe(2); // waits twice as long the second time
+      vi.advanceTimersByTime(1000);
+      expect(FakeEventSource.opened.length).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

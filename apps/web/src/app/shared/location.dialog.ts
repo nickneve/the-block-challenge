@@ -78,6 +78,8 @@ const MIN_QUERY = 3;
 
         <ul id="place-results" class="results" role="listbox" aria-label="Matching places" [hidden]="!results().length">
           @for (place of results(); track place.label; let i = $index) {
+            <!-- Combobox pattern: the input keeps focus and handles the keys (arrows, Enter) via aria-activedescendant. -->
+            <!-- eslint-disable-next-line @angular-eslint/template/click-events-have-key-events, @angular-eslint/template/interactive-supports-focus -->
             <li
               role="option"
               class="result"

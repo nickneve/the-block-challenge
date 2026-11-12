@@ -19,12 +19,14 @@ import {
 import { takeUntilDestroyed, toObservable, toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import {
+  auditTime,
   catchError,
   debounceTime,
   distinctUntilChanged,
   EMPTY,
   filter,
   map,
+  merge,
   startWith,
   Subject,
   switchMap,
@@ -69,6 +71,10 @@ import { VehicleCardComponent } from './vehicle-card.component';
 import { VehicleRowComponent } from './vehicle-row.component';
 
 const PAGE_SIZE = 24;
+/** Wait for the search box to go quiet this long before searching. */
+const SEARCH_DEBOUNCE_MS = 300;
+/** After live updates, re-read the list from the server at most this often. */
+const RECONCILE_MS = 1000;
 /** Start fetching the next page this far before the end of the list scrolls into view. */
 const PREFETCH_MARGIN_PX = 900;
 const VIEW_STORAGE_KEY = 'the-block.inventory-view';
@@ -133,16 +139,22 @@ export class InventoryPage {
   readonly query = toSignal(this.route.queryParams.pipe(map(parseInventoryQuery)), { initialValue: DEFAULT_QUERY });
   readonly location = this.locationService.location;
 
+  /** Live bids move the counts too (a lot ends, a price crosses a range): re-count on demand. */
+  private readonly facetsRefresh$ = new Subject<void>();
+
   /**
    * Filter options with counts for the current search. Sorting doesn't change the
    * counts, so only a change of filters refetches; the last good set stays up meanwhile.
    */
   readonly facets = toSignal(
-    toObservable(this.query).pipe(
-      map((query) => ({ query, key: searchKey({ ...query, sort: DEFAULT_QUERY.sort }) })),
-      distinctUntilChanged((a, b) => a.key === b.key),
-      switchMap(({ query }) => this.api.facets(query).pipe(catchError(() => EMPTY))),
-    ),
+    merge(
+      toObservable(this.query).pipe(
+        map((query) => ({ query, key: searchKey({ ...query, sort: DEFAULT_QUERY.sort }) })),
+        distinctUntilChanged((a, b) => a.key === b.key),
+        map(({ query }) => query),
+      ),
+      this.facetsRefresh$.pipe(map(() => this.query())),
+    ).pipe(switchMap((query) => this.api.facets(query).pipe(catchError(() => EMPTY)))),
     { initialValue: null },
   );
   /** The whole auction by status, for the summary under the title. */
@@ -189,12 +201,17 @@ export class InventoryPage {
   private lastPushedSearch = '';
   private skipFetchFor: string | null = null;
   private readonly retry$ = new Subject<void>();
-  private readonly searchChanges$ = new Subject<string>();
+  /** Typed text, debounced into the URL. `null` cancels a search that hasn't run yet. */
+  private readonly searchChanges$ = new Subject<string | null>();
+  /** Asks for the loaded list to be re-read from the server (see the constructor). */
+  private readonly reconcile$ = new Subject<void>();
+  /** A reconcile was asked for while a fetch was in flight; run it once that lands. */
+  private reconcileQueued = false;
   private readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
   private readonly resultsTop = viewChild<ElementRef<HTMLElement>>('resultsTop');
 
   constructor() {
-    this.restoreSnapshot();
+    const restored = this.restoreSnapshot();
 
     // Results follow the URL (and the buyer's location): any change refetches page 1.
     toObservable(this.listKey)
@@ -233,27 +250,77 @@ export class InventoryPage {
         this.statusCounts.set(page.statusCounts);
         this.state.set('ready');
         if (refreshed) this.revealResults();
+        this.runQueuedReconcile();
       });
 
     // Typing updates the URL after a short pause (replaceUrl: no history entry per keystroke).
-    this.searchChanges$.pipe(debounceTime(300), takeUntilDestroyed()).subscribe((text) => {
-      this.lastPushedSearch = text.trim();
-      this.navigate({ ...this.query(), q: text }, true);
-    });
+    // Clearing the search sends null, which replaces any text still waiting here, so the
+    // cleared search can't come back when the pause ends.
+    this.searchChanges$
+      .pipe(
+        debounceTime(SEARCH_DEBOUNCE_MS),
+        filter((text): text is string => text !== null),
+        takeUntilDestroyed(),
+      )
+      .subscribe((text) => {
+        this.lastPushedSearch = text.trim();
+        this.navigate({ ...this.query(), q: text }, true);
+      });
 
     // Keep the search box in sync when the URL changes from elsewhere (back button, chips, saved search).
+    // The URL wins: drop anything typed that hasn't been searched yet.
     effect(() => {
       const q = this.query().q;
       if (q !== this.lastPushedSearch) {
+        this.cancelPendingSearch();
         this.lastPushedSearch = q;
         this.searchInput.set(q);
       }
     });
 
-    // Live bids update lots in place.
+    // Live bids update prices in place straight away. A bid can also change which lots match the
+    // filters (a lot ends, a price leaves the range), their order and the counts, so once updates
+    // settle the loaded window is re-read from the server, which owns those rules.
     this.live.updates$.pipe(takeUntilDestroyed()).subscribe((update) => {
       this.items.update((items) => items.map((item) => applyAuctionUpdate(item, update, this.bidder.handle())));
+      this.reconcile$.next();
     });
+    // The live stream lost events it couldn't replay: re-read everything.
+    this.live.resync$.pipe(takeUntilDestroyed()).subscribe(() => this.reconcile$.next());
+
+    this.reconcile$
+      .pipe(
+        auditTime(RECONCILE_MS),
+        filter(() => {
+          const idle = this.state() === 'ready' && !this.loadingMore();
+          if (!idle) this.reconcileQueued = true;
+          return idle && this.items().length > 0;
+        }),
+        switchMap(() => {
+          const key = this.listKey();
+          const page = this.page;
+          return this.api.search(this.query(), 1, page * PAGE_SIZE).pipe(
+            // Drop the answer if the list moved on meanwhile (new search, next page, refresh).
+            filter(() => {
+              const current = key === this.listKey() && page === this.page && this.state() === 'ready' && !this.loadingMore();
+              if (!current) this.reconcileQueued = true;
+              return current;
+            }),
+            // Quiet on failure: the in-place updates stay, and the next update tries again.
+            catchError(() => EMPTY),
+          );
+        }),
+        takeUntilDestroyed(),
+      )
+      .subscribe((page) => {
+        this.items.set(page.items);
+        this.total.set(page.total);
+        this.statusCounts.set(page.statusCounts);
+        this.facetsRefresh$.next();
+      });
+
+    // A list kept from before (Back from a vehicle) may be out of date: check it.
+    if (restored) this.reconcile$.next();
 
     // Lock page scroll while the mobile filter sheet is open.
     effect(() => this.document.body.classList.toggle('scroll-locked', this.filtersOpen()));
@@ -271,6 +338,7 @@ export class InventoryPage {
   }
 
   clearSearch(): void {
+    this.cancelPendingSearch();
     this.searchInput.set('');
     this.lastPushedSearch = '';
     this.navigate({ ...this.query(), q: '' });
@@ -340,6 +408,7 @@ export class InventoryPage {
   }
 
   applySaved(saved: SavedSearch): void {
+    this.cancelPendingSearch();
     this.navigate(parseInventoryQuery(saved.query));
   }
 
@@ -353,6 +422,7 @@ export class InventoryPage {
 
   removeFilter(chip: AppliedFilter): void {
     if (chip.id === 'q') {
+      this.cancelPendingSearch();
       this.searchInput.set('');
       this.lastPushedSearch = '';
     }
@@ -366,6 +436,7 @@ export class InventoryPage {
 
   /** Clears everything shown as a chip, search text included. */
   resetFilters(): void {
+    this.cancelPendingSearch();
     this.searchInput.set('');
     this.lastPushedSearch = '';
     this.navigate({ ...clearFilters(this.query()), q: '' });
@@ -404,6 +475,7 @@ export class InventoryPage {
         });
         this.total.set(page.total);
         this.loadingMore.set(false);
+        this.runQueuedReconcile();
         // The observer only reports changes, so on a very tall screen the sentinel may still be in
         // reach after this page renders — check its real position and keep filling if so.
         afterNextRender(() => this.sentinelInReach() && this.loadMore(), { injector: this.injector });
@@ -411,8 +483,20 @@ export class InventoryPage {
       error: () => {
         this.loadingMore.set(false);
         this.loadMoreFailed.set(true);
+        this.runQueuedReconcile();
       },
     });
+  }
+
+  /** Drops typed text that's still waiting out the debounce, so it can't override what happens next. */
+  private cancelPendingSearch(): void {
+    this.searchChanges$.next(null);
+  }
+
+  private runQueuedReconcile(): void {
+    if (!this.reconcileQueued) return;
+    this.reconcileQueued = false;
+    this.reconcile$.next();
   }
 
   private sentinelInReach(): boolean {
@@ -434,15 +518,16 @@ export class InventoryPage {
     if (top < headerHeight) view.scrollTo({ top: view.scrollY + top - headerHeight - 12, behavior: 'smooth' });
   }
 
-  private restoreSnapshot(): void {
+  private restoreSnapshot(): boolean {
     const snapshot = this.snapshots.take(this.listKey());
-    if (!snapshot) return;
+    if (!snapshot) return false;
     this.items.set(snapshot.items);
     this.total.set(snapshot.total);
     this.statusCounts.set(snapshot.statusCounts);
     this.page = snapshot.page;
     this.state.set('ready');
     this.skipFetchFor = snapshot.key;
+    return true;
   }
 
   private saveSnapshot(): void {

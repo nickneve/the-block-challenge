@@ -9,13 +9,14 @@ import { SAVED_SEARCH_LIMIT, SavedSearchesStore } from '../../core/state/saved-s
 import { ToastService } from '../../core/toast.service';
 import { formatRelative } from '../../shared/format';
 import { IconComponent } from '../../shared/ui/icon.component';
+import { LoadErrorComponent } from '../../shared/ui/load-error.component';
 import { describeQuery, parseInventoryQuery } from '../inventory/inventory-query';
 import { SaveSearchData, SaveSearchDialog } from './save-search.dialog';
 
 /** The buyer's saved searches: open one, rename it or delete it. */
 @Component({
   selector: 'app-saved-searches-page',
-  imports: [RouterLink, IconComponent],
+  imports: [RouterLink, IconComponent, LoadErrorComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './saved-searches.page.html',
   styleUrl: './saved-searches.page.scss',

@@ -6,6 +6,8 @@ import { IconName, ICONS } from './icons';
  * Decorative by default (aria-hidden); label the surrounding button or link instead.
  */
 @Component({
+  // An SVG component has to sit on a real <svg> element, so its selector is an attribute.
+  // eslint-disable-next-line @angular-eslint/component-selector
   selector: 'svg[appIcon]',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {

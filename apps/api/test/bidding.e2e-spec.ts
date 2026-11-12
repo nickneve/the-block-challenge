@@ -1,4 +1,4 @@
-import { INestApplication } from '@nestjs/common';
+import { type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -6,7 +6,7 @@ import { configureApp } from '../src/app.setup';
 import { Clock } from '../src/common/clock';
 import { APP_CONFIG, loadConfig } from '../src/config/app-config';
 import { CITY_COORDINATES } from '../src/database/seed/city-coordinates';
-import { ROUTE_TABLE, RouteTable } from '../src/routing/road-distances';
+import { ROUTE_TABLE, type RouteTable } from '../src/routing/road-distances';
 import type { SavedSearchDto } from '../src/saved-searches/saved-searches.service';
 import type { FacetsDto, VehicleDetailDto, VehiclePageDto, VehicleSummaryDto } from '../src/vehicles/vehicle.dto';
 
